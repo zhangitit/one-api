@@ -1,0 +1,106 @@
+name: zeonexus-cloud-1-1
+
+x-gateway-common: &gateway-common
+  build:
+    context: ..
+    dockerfile: Dockerfile.zeonexus
+    args:
+      ALPINE_MIRROR: ${ALPINE_MIRROR:-}
+      GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+  image: zeonexus/gateway:1.1.0
+  restart: unless-stopped
+  command: ["--log-dir", "/data/logs"]
+  environment: &gateway-environment
+    ZEO_NEXUS_ENABLED: "true"
+    ZEO_NEXUS_CONTROL_SECRET: ${ZEO_NEXUS_CONTROL_SECRET:?set ZEO_NEXUS_CONTROL_SECRET}
+    ZEO_NEXUS_MASTER_KEY: ${ZEO_NEXUS_MASTER_KEY:?set ZEO_NEXUS_MASTER_KEY}
+    SESSION_SECRET: ${ZEO_NEXUS_SESSION_SECRET:?set ZEO_NEXUS_SESSION_SECRET}
+    SYNC_FREQUENCY: "30"
+    MEMORY_CACHE_ENABLED: "true"
+    ENFORCE_INCLUDE_USAGE: "true"
+    APPROXIMATE_TOKEN_ENABLED: "true"
+    CHANNEL_TEST_FREQUENCY: "5"
+    RETRY_TIMES: "1"
+    RELAY_TIMEOUT: "300"
+    ZEO_NEXUS_MAX_REQUEST_BODY_BYTES: "4194304"
+    ZEO_NEXUS_MAX_RESERVE_TOKENS: "262144"
+    TZ: Asia/Shanghai
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "wget --quiet --tries=1 --output-document=- http://127.0.0.1:3000/readyz >/dev/null"]
+    interval: 10s
+    timeout: 3s
+    retries: 12
+    start_period: 20s
+
+services:
+  gateway-aggregation:
+    <<: *gateway-common
+    container_name: zeonexus-gateway-aggregation
+    ports:
+      - "127.0.0.1:3101:3000"
+    volumes:
+      - aggregation-logs:/data/logs
+    environment:
+      <<: *gateway-environment
+      ZEO_NEXUS_PROFILE: aggregation
+      ZEO_NEXUS_ALLOWED_UPSTREAM_HOSTS: ${ZEO_NEXUS_AGGREGATION_UPSTREAM_HOSTS:?set ZEO_NEXUS_AGGREGATION_UPSTREAM_HOSTS}
+      REDIS_CONN_STRING: redis://redis:6379/1
+      SQL_DSN: zeonexus:${MYSQL_PASSWORD:?set MYSQL_PASSWORD}@tcp(mysql:3306)/zeonexus_aggregation?charset=utf8mb4&parseTime=True&loc=Local
+
+  gateway-inference:
+    <<: *gateway-common
+    container_name: zeonexus-gateway-inference
+    ports:
+      - "127.0.0.1:3102:3000"
+    volumes:
+      - inference-logs:/data/logs
+    environment:
+      <<: *gateway-environment
+      ZEO_NEXUS_PROFILE: inference
+      ZEO_NEXUS_ALLOWED_UPSTREAM_HOSTS: ${ZEO_NEXUS_INFERENCE_UPSTREAM_HOSTS:?set ZEO_NEXUS_INFERENCE_UPSTREAM_HOSTS}
+      ZEO_NEXUS_ALLOW_INSECURE_HTTP: ${ZEO_NEXUS_INFERENCE_ALLOW_INSECURE_HTTP:-false}
+      REDIS_CONN_STRING: redis://redis:6379/2
+      SQL_DSN: zeonexus:${MYSQL_PASSWORD:?set MYSQL_PASSWORD}@tcp(mysql:3306)/zeonexus_inference?charset=utf8mb4&parseTime=True&loc=Local
+
+  mysql:
+    image: mysql:8.4
+    container_name: zeonexus-gateway-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: zeonexus
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      MYSQL_DATABASE: zeonexus_aggregation
+      TZ: Asia/Shanghai
+    volumes:
+      - gateway-mysql:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: zeonexus-gateway-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - gateway-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  aggregation-logs:
+  inference-logs:
+  gateway-mysql:
+  gateway-redis:

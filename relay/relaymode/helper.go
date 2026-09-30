@@ -10,6 +10,8 @@ func GetByPath(path string) int {
 		relayMode = Completions
 	} else if strings.HasPrefix(path, "/v1/embeddings") {
 		relayMode = Embeddings
+	} else if strings.HasPrefix(path, "/v1/rerank") {
+		relayMode = Rerank
 	} else if strings.HasSuffix(path, "embeddings") {
 		relayMode = Embeddings
 	} else if strings.HasPrefix(path, "/v1/moderations") {
@@ -28,4 +30,17 @@ func GetByPath(path string) int {
 		relayMode = Proxy
 	}
 	return relayMode
+}
+
+func Name(mode int) string {
+	switch mode {
+	case ChatCompletions:
+		return "chat"
+	case Embeddings:
+		return "embedding"
+	case Rerank:
+		return "rerank"
+	default:
+		return "unknown"
+	}
 }

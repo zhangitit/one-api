@@ -14,6 +14,10 @@ var ImpatientHTTPClient *http.Client
 var UserContentRequestHTTPClient *http.Client
 
 func Init() {
+	var checkRedirect func(*http.Request, []*http.Request) error
+	if config.ZeoNexusEnabled {
+		checkRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
 	if config.UserContentRequestProxy != "" {
 		logger.SysLog(fmt.Sprintf("using %s as proxy to fetch user content", config.UserContentRequestProxy))
 		proxyURL, err := url.Parse(config.UserContentRequestProxy)
@@ -24,11 +28,12 @@ func Init() {
 			Proxy: http.ProxyURL(proxyURL),
 		}
 		UserContentRequestHTTPClient = &http.Client{
-			Transport: transport,
-			Timeout:   time.Second * time.Duration(config.UserContentRequestTimeout),
+			Transport:     transport,
+			Timeout:       time.Second * time.Duration(config.UserContentRequestTimeout),
+			CheckRedirect: checkRedirect,
 		}
 	} else {
-		UserContentRequestHTTPClient = &http.Client{}
+		UserContentRequestHTTPClient = &http.Client{CheckRedirect: checkRedirect}
 	}
 	var transport http.RoundTripper
 	if config.RelayProxy != "" {
@@ -44,17 +49,20 @@ func Init() {
 
 	if config.RelayTimeout == 0 {
 		HTTPClient = &http.Client{
-			Transport: transport,
+			Transport:     transport,
+			CheckRedirect: checkRedirect,
 		}
 	} else {
 		HTTPClient = &http.Client{
-			Timeout:   time.Duration(config.RelayTimeout) * time.Second,
-			Transport: transport,
+			Timeout:       time.Duration(config.RelayTimeout) * time.Second,
+			Transport:     transport,
+			CheckRedirect: checkRedirect,
 		}
 	}
 
 	ImpatientHTTPClient = &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: transport,
+		Timeout:       5 * time.Second,
+		Transport:     transport,
+		CheckRedirect: checkRedirect,
 	}
 }

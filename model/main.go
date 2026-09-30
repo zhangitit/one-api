@@ -25,8 +25,14 @@ func CreateRootAccountIfNeed() error {
 	var user User
 	//if user.Status != util.UserStatusEnabled {
 	if err := DB.First(&user).Error; err != nil {
-		logger.SysLog("no user exists, creating a root user for you: username is root, password is 123456")
-		hashedPassword, err := common.Password2Hash("123456")
+		password := "123456"
+		if config.ZeoNexusEnabled {
+			password = random.GetRandomString(48)
+			logger.SysLog("no user exists, creating an inaccessible internal root account")
+		} else {
+			logger.SysLog("no user exists, creating a root user for you: username is root, password is 123456")
+		}
+		hashedPassword, err := common.Password2Hash(password)
 		if err != nil {
 			return err
 		}
@@ -159,6 +165,11 @@ func migrateDB() error {
 	}
 	if err = DB.AutoMigrate(&Channel{}); err != nil {
 		return err
+	}
+	if config.ZeoNexusEnabled {
+		if err = MigrateZeoNexus(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

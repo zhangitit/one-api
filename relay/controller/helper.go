@@ -2,12 +2,14 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"strings"
 
+	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/relay/constant/role"
 
@@ -53,6 +55,20 @@ func getPromptTokens(textRequest *relaymodel.GeneralOpenAIRequest, relayMode int
 		return openai.CountTokenInput(textRequest.Prompt, textRequest.Model)
 	case relaymode.Moderations:
 		return openai.CountTokenInput(textRequest.Input, textRequest.Model)
+	case relaymode.Embeddings:
+		return openai.CountTokenInput(textRequest.Input, textRequest.Model)
+	case relaymode.Rerank:
+		tokens := openai.CountTokenText(textRequest.Query, textRequest.Model)
+		for _, document := range textRequest.Documents {
+			if value, ok := document.(string); ok {
+				tokens += openai.CountTokenText(value, textRequest.Model)
+				continue
+			}
+			if value, err := json.Marshal(document); err == nil {
+				tokens += openai.CountTokenText(string(value), textRequest.Model)
+			}
+		}
+		return tokens
 	}
 	return 0
 }
@@ -94,7 +110,8 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	return preConsumedQuota, nil
 }
 
-func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *meta.Meta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, systemPromptReset bool) {
+func postConsumeQuota(c *gin.Context, usage *relaymodel.Usage, meta *meta.Meta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, systemPromptReset bool) {
+	ctx := c.Request.Context()
 	if usage == nil {
 		logger.Error(ctx, "usage is nil, which is unexpected")
 		return
@@ -138,6 +155,13 @@ func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *meta.M
 	})
 	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 	model.UpdateChannelUsedQuota(meta.ChannelId, quota)
+	if config.ZeoNexusEnabled {
+		if err := model.CompleteZeoUsage(c.GetString(helper.RequestIdKey), meta.OriginModelName, meta.ActualModelName,
+			meta.ChannelId, promptTokens, completionTokens, helper.CalcElapsedTime(meta.StartTime),
+			c.GetInt64(ctxkey.ZeoFirstByteMs), meta.IsStream, c.Request.Context().Err() != nil); err != nil {
+			logger.Error(ctx, "failed to settle ZeoNexus usage: "+err.Error())
+		}
+	}
 }
 
 func getMappedModelName(modelName string, mapping map[string]string) (string, bool) {

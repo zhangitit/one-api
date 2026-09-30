@@ -58,6 +58,11 @@ type GeneralOpenAIRequest struct {
 	Input          any    `json:"input,omitempty"`
 	EncodingFormat string `json:"encoding_format,omitempty"`
 	Dimensions     int    `json:"dimensions,omitempty"`
+	// Common rerank API used by GPUStack and OpenAI-compatible gateways.
+	Query           string `json:"query,omitempty"`
+	Documents       []any  `json:"documents,omitempty"`
+	TopN            int    `json:"top_n,omitempty"`
+	ReturnDocuments *bool  `json:"return_documents,omitempty"`
 	// https://platform.openai.com/docs/api-reference/images/create
 	Prompt  any     `json:"prompt,omitempty"`
 	Quality *string `json:"quality,omitempty"`

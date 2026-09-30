@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/model"
 	relay "github.com/songquanpeng/one-api/relay"
@@ -132,7 +133,11 @@ func ListAllModels(c *gin.Context) {
 func ListModels(c *gin.Context) {
 	ctx := c.Request.Context()
 	var availableModels []string
-	if c.GetString(ctxkey.AvailableModels) != "" {
+	if config.ZeoNexusEnabled {
+		if c.GetString(ctxkey.AvailableModels) != "" {
+			availableModels = strings.Split(c.GetString(ctxkey.AvailableModels), ",")
+		}
+	} else if c.GetString(ctxkey.AvailableModels) != "" {
 		availableModels = strings.Split(c.GetString(ctxkey.AvailableModels), ",")
 	} else {
 		userId := c.GetInt(ctxkey.Id)
@@ -170,6 +175,11 @@ func ListModels(c *gin.Context) {
 
 func RetrieveModel(c *gin.Context) {
 	modelId := c.Param("model")
+	if config.ZeoNexusEnabled && !modelInCSV(modelId, c.GetString(ctxkey.AvailableModels)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": relaymodel.Error{Message: fmt.Sprintf("The model '%s' does not exist", modelId),
+			Type: "invalid_request_error", Param: "model", Code: "model_not_found"}})
+		return
+	}
 	if model, ok := modelsMap[modelId]; ok {
 		c.JSON(200, model)
 	} else {
@@ -183,6 +193,15 @@ func RetrieveModel(c *gin.Context) {
 			"error": Error,
 		})
 	}
+}
+
+func modelInCSV(modelId, available string) bool {
+	for _, item := range strings.Split(available, ",") {
+		if strings.TrimSpace(item) == modelId {
+			return true
+		}
+	}
+	return false
 }
 
 func GetUserAvailableModels(c *gin.Context) {

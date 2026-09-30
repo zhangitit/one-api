@@ -21,4 +21,11 @@ const (
 	AvailableModels   = "available_models"
 	KeyRequestBody    = "key_request_body"
 	SystemPrompt      = "system_prompt"
+	ZeoCredentialId   = "zeo_credential_id"
+	ZeoTenantId       = "zeo_tenant_id"
+	ZeoProfile        = "zeo_profile"
+	ZeoAllowedSites   = "zeo_allowed_sites"
+	ZeoReserved       = "zeo_reserved_tokens"
+	ZeoFirstByteMs    = "zeo_first_byte_ms"
+	ZeoRequestStart   = "zeo_request_start"
 )

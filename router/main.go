@@ -12,6 +12,11 @@ import (
 )
 
 func SetRouter(router *gin.Engine, buildFS embed.FS) {
+	if config.ZeoNexusEnabled {
+		SetZeoNexusRouter(router)
+		SetRelayRouter(router)
+		return
+	}
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)

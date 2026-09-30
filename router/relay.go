@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 
@@ -10,12 +11,21 @@ import (
 func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.CORS())
 	router.Use(middleware.GzipDecodeMiddleware())
+	router.Use(middleware.ZeoNexusFirstByte())
 	// https://platform.openai.com/docs/api-reference/introduction
 	modelsRouter := router.Group("/v1/models")
 	modelsRouter.Use(middleware.TokenAuth())
 	{
 		modelsRouter.GET("", controller.ListModels)
 		modelsRouter.GET("/:model", controller.RetrieveModel)
+	}
+	if config.ZeoNexusEnabled {
+		relayV1Router := router.Group("/v1")
+		relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+		relayV1Router.POST("/chat/completions", controller.Relay)
+		relayV1Router.POST("/embeddings", controller.Relay)
+		relayV1Router.POST("/rerank", controller.Relay)
+		return
 	}
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())

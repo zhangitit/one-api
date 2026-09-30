@@ -7,10 +7,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channeltype"
+	"github.com/songquanpeng/one-api/relay/relaymode"
 )
 
 type ModelRequest struct {
@@ -25,6 +27,28 @@ func Distribute() func(c *gin.Context) {
 		c.Set(ctxkey.Group, userGroup)
 		var requestModel string
 		var channel *model.Channel
+		if config.ZeoNexusEnabled {
+			requestModel = c.GetString(ctxkey.RequestModel)
+			expectedMode, err := model.GetZeoRouteMode(requestModel, config.ZeoNexusProfile)
+			if err != nil || expectedMode != relaymode.Name(relaymode.GetByPath(c.Request.URL.Path)) {
+				zeoAbort(c, http.StatusBadRequest, "model_mode_mismatch", "模型与 API 类型不匹配")
+				return
+			}
+			channel, err = model.GetZeoSatisfiedChannel(requestModel, config.ZeoNexusProfile, c.GetString(ctxkey.ZeoAllowedSites), 0)
+			if err != nil {
+				zeoAbort(c, http.StatusServiceUnavailable, "model_unavailable", fmt.Sprintf("模型 %s 当前没有可用渠道", requestModel))
+				return
+			}
+			if !model.AcquireZeoChannel(channel.Id) {
+				zeoAbort(c, http.StatusTooManyRequests, "rate_limited", "模型当前并发已满，请稍后重试")
+				return
+			}
+			defer model.ReleaseZeoChannel(channel.Id)
+			c.Set(ctxkey.Group, "zeonexus-"+config.ZeoNexusProfile)
+			SetupContextForSelectedChannel(c, channel, requestModel)
+			c.Next()
+			return
+		}
 		channelId, ok := c.Get(ctxkey.SpecificChannelId)
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))

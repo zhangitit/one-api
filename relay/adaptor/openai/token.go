@@ -21,6 +21,10 @@ var defaultTokenEncoder *tiktoken.Tiktoken
 
 func InitTokenEncoders() {
 	logger.SysLog("initializing token encoders")
+	if config.ApproximateTokenEnabled {
+		logger.SysLog("approximate token counting enabled; external tokenizer assets are not required")
+		return
+	}
 	gpt35TokenEncoder, err := tiktoken.EncodingForModel("gpt-3.5-turbo")
 	if err != nil {
 		logger.FatalLog(fmt.Sprintf("failed to get gpt-3.5-turbo token encoder: %s, "+

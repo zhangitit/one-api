@@ -66,6 +66,14 @@ func parseTestResponse(resp string) (*openai.TextResponse, string, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, request *relaymodel.GeneralOpenAIRequest) (responseMessage string, err error, openaiErr *relaymodel.Error) {
+	if config.ZeoNexusEnabled {
+		copyOfChannel := *channel
+		channel = &copyOfChannel
+		channel.Key, err = model.RevealZeoChannelKey(channel.Key)
+		if err != nil {
+			return "", err, nil
+		}
+	}
 	startTime := time.Now()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -244,11 +252,19 @@ func testChannels(ctx context.Context, notify bool, scope string) error {
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 			if isChannelEnabled && milliseconds > disableThreshold {
-				err = fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
-				if config.AutomaticDisableChannelEnabled {
-					monitor.DisableChannel(channel.Id, channel.Name, err.Error())
+				latencyErr := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
+				if config.ZeoNexusEnabled {
+					// A completed model response is still a healthy upstream. Reasoning models regularly
+					// exceed One API's legacy five-second threshold, so latency is operational telemetry
+					// and must not remove the only usable route from a ZeoNexus gateway.
+					logger.SysLog(fmt.Sprintf("channel #%d remains enabled: %s", channel.Id, latencyErr.Error()))
 				} else {
-					_ = message.Notify(message.ByAll, fmt.Sprintf("渠道 %s （%d）测试超时", channel.Name, channel.Id), "", err.Error())
+					err = latencyErr
+					if config.AutomaticDisableChannelEnabled {
+						monitor.DisableChannel(channel.Id, channel.Name, err.Error())
+					} else {
+						_ = message.Notify(message.ByAll, fmt.Sprintf("渠道 %s （%d）测试超时", channel.Name, channel.Id), "", err.Error())
+					}
 				}
 			}
 			if isChannelEnabled && monitor.ShouldDisableChannel(openaiErr, -1) {

@@ -68,7 +68,13 @@ func Relay(c *gin.Context) {
 		retryTimes = 0
 	}
 	for i := retryTimes; i > 0; i-- {
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		var channel *dbmodel.Channel
+		var err error
+		if config.ZeoNexusEnabled {
+			channel, err = dbmodel.GetZeoSatisfiedChannel(originalModel, config.ZeoNexusProfile, c.GetString(ctxkey.ZeoAllowedSites), lastFailedChannelId)
+		} else {
+			channel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		}
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %+v", err)
 			break
@@ -77,10 +83,16 @@ func Relay(c *gin.Context) {
 		if channel.Id == lastFailedChannelId {
 			continue
 		}
+		if config.ZeoNexusEnabled && !dbmodel.AcquireZeoChannel(channel.Id) {
+			continue
+		}
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, err := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		bizErr = relayHelper(c, relayMode)
+		if config.ZeoNexusEnabled {
+			dbmodel.ReleaseZeoChannel(channel.Id)
+		}
 		if bizErr == nil {
 			return
 		}

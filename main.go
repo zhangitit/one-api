@@ -29,6 +29,9 @@ var buildFS embed.FS
 func main() {
 	common.Init()
 	logger.SetupLogger()
+	if err := config.ValidateZeoNexus(); err != nil {
+		logger.FatalLog(err.Error())
+	}
 	logger.SysLogf("One API %s started", common.Version)
 
 	if os.Getenv("GIN_MODE") != gin.DebugMode {
@@ -62,6 +65,17 @@ func main() {
 
 	// Initialize options
 	model.InitOptionMap()
+	if config.ZeoNexusEnabled {
+		// Gateway deployments have no dashboard for mutable One API options. Keep the
+		// data-plane invariants deterministic even when an old options table exists.
+		config.ApproximateTokenEnabled = true
+		config.EnforceIncludeUsage = true
+		config.AutomaticDisableChannelEnabled = true
+		config.AutomaticEnableChannelEnabled = true
+		if config.RetryTimes < 1 {
+			config.RetryTimes = 1
+		}
+	}
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
 	if common.RedisEnabled {
 		// for compatibility with old versions

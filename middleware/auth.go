@@ -5,6 +5,7 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/blacklist"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/network"
 	"github.com/songquanpeng/one-api/model"
@@ -90,6 +91,10 @@ func RootAuth() func(c *gin.Context) {
 
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
+		if config.ZeoNexusEnabled {
+			zeoNexusTokenAuth(c)
+			return
+		}
 		ctx := c.Request.Context()
 		key := c.Request.Header.Get("Authorization")
 		key = strings.TrimPrefix(key, "Bearer ")
@@ -155,6 +160,9 @@ func shouldCheckModel(c *gin.Context) bool {
 		return true
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/chat/completions") {
+		return true
+	}
+	if strings.HasPrefix(c.Request.URL.Path, "/v1/embeddings") || strings.HasPrefix(c.Request.URL.Path, "/v1/rerank") {
 		return true
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/images") {

@@ -1,0 +1,12 @@
+FROM golang:1.23-alpine AS test
+ARG ALPINE_MIRROR="https://mirrors.aliyun.com/alpine"
+ARG GOPROXY="https://goproxy.cn,direct"
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+        sed -i "s#https://dl-cdn.alpinelinux.org/alpine#$ALPINE_MIRROR#g" /etc/apk/repositories; \
+    fi \
+    && apk add --no-cache build-base sqlite-dev
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN GOPROXY="$GOPROXY" go mod download
+COPY . .
+RUN go test ./router

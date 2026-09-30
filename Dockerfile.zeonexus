@@ -1,0 +1,28 @@
+FROM golang:1.23-alpine AS builder
+
+ARG ALPINE_MIRROR=""
+ARG GOPROXY="https://proxy.golang.org,direct"
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+        sed -i "s#https://dl-cdn.alpinelinux.org/alpine#$ALPINE_MIRROR#g" /etc/apk/repositories; \
+    fi \
+    && apk add --no-cache build-base sqlite-dev
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN GOPROXY="$GOPROXY" go mod download
+COPY . .
+RUN mkdir -p web/build && touch web/build/.gitkeep
+RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X 'github.com/songquanpeng/one-api/common.Version=$(cat VERSION)' -linkmode external -extldflags '-static'" -o zeonexus-gateway
+
+FROM alpine:3.21
+ARG ALPINE_MIRROR=""
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+        sed -i "s#https://dl-cdn.alpinelinux.org/alpine#$ALPINE_MIRROR#g" /etc/apk/repositories; \
+    fi \
+    && apk add --no-cache ca-certificates tzdata wget su-exec \
+    && addgroup -S zeonexus \
+    && adduser -S -G zeonexus zeonexus
+COPY --from=builder /build/zeonexus-gateway /usr/local/bin/zeonexus-gateway
+COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+WORKDIR /data
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

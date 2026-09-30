@@ -1,0 +1,6 @@
+.git
+.github
+data
+logs
+web/*/node_modules
+web/*/build

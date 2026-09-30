@@ -1,0 +1,193 @@
+openapi: 3.0.3
+info:
+  title: ZeoNexus Gateway Control API
+  version: 1.1.0
+  description: Internal management-network contract. All operations require ZeoNexus HMAC headers.
+servers:
+  - url: http://127.0.0.1:3101/internal/nexus/v1
+security:
+  - ZeoSignature: []
+paths:
+  /health:
+    get:
+      operationId: gatewayHealth
+      responses:
+        '200': {description: Database and Redis are healthy}
+        '503': {description: A required dependency is degraded}
+  /tenants/{id}:
+    put:
+      operationId: upsertTenant
+      parameters: [$ref: '#/components/parameters/ResourceId']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Tenant'}
+      responses:
+        '200': {description: Tenant accepted}
+  /credentials/{id}:
+    put:
+      operationId: upsertCredential
+      parameters: [$ref: '#/components/parameters/ResourceId']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Credential'}
+      responses:
+        '200': {description: Credential accepted}
+    delete:
+      operationId: disableCredential
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+        - $ref: '#/components/parameters/Revision'
+      responses:
+        '204': {description: Credential disabled}
+  /model-grants/{id}:
+    put:
+      operationId: upsertModelGrant
+      parameters: [$ref: '#/components/parameters/ResourceId']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelGrant'}
+      responses:
+        '200': {description: Grant accepted}
+    delete:
+      operationId: disableModelGrant
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+        - $ref: '#/components/parameters/Revision'
+      responses:
+        '204': {description: Grant disabled}
+  /channels/{id}:
+    put:
+      operationId: upsertChannel
+      parameters: [$ref: '#/components/parameters/ResourceId']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Channel'}
+      responses:
+        '200': {description: Channel accepted}
+    delete:
+      operationId: disableChannel
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+        - $ref: '#/components/parameters/Revision'
+      responses:
+        '204': {description: Channel disabled}
+  /channels/{id}/test:
+    post:
+      operationId: testChannel
+      parameters: [$ref: '#/components/parameters/ResourceId']
+      responses:
+        '200': {description: Upstream returned valid usage}
+        '502': {description: Upstream test failed}
+  /routes/{id}:
+    put:
+      operationId: upsertRoute
+      parameters: [$ref: '#/components/parameters/ResourceId']
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Route'}
+      responses:
+        '200': {description: Route accepted}
+  /usage:
+    get:
+      operationId: listUsage
+      parameters:
+        - {name: after, in: query, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 200}}
+      responses:
+        '200':
+          description: Completed usage records in ascending cursor order
+  /usage-reconciliation:
+    get:
+      operationId: reconcileUsageBalances
+      responses:
+        '200':
+          description: Authoritative credential and model-grant token balances plus the latest completed usage cursor
+components:
+  securitySchemes:
+    ZeoSignature:
+      type: apiKey
+      in: header
+      name: X-Zeo-Signature
+      description: HMAC-SHA256 with X-Zeo-Timestamp and X-Zeo-Nonce.
+  parameters:
+    ResourceId: {name: id, in: path, required: true, schema: {type: string, minLength: 1}}
+    Revision: {name: revision, in: query, required: true, schema: {type: integer, minimum: 1}}
+  schemas:
+    Tenant:
+      type: object
+      required: [name, status, revision]
+      properties:
+        name: {type: string}
+        status: {type: string, enum: [active, disabled]}
+        revision: {type: integer, minimum: 1}
+    Credential:
+      type: object
+      required: [tenant_id, key_hash, key_prefix, name, profile, status, models, revision]
+      properties:
+        tenant_id: {type: string}
+        key_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        key_prefix: {type: string}
+        name: {type: string}
+        profile: {$ref: '#/components/schemas/Profile'}
+        status: {type: string, enum: [active, disabled]}
+        models: {type: array, items: {type: string}}
+        allowed_sites: {type: array, items: {type: string}}
+        expires_at: {type: integer, format: int64}
+        token_limit: {type: integer, format: int64, minimum: 0}
+        used_tokens: {type: integer, format: int64, minimum: 0}
+        revision: {type: integer, minimum: 1}
+    ModelGrant:
+      type: object
+      required: [tenant_id, profile, model, status, expires_at, revision]
+      properties:
+        tenant_id: {type: string}
+        profile: {$ref: '#/components/schemas/Profile'}
+        model: {type: string}
+        allowed_sites: {type: array, items: {type: string}}
+        status: {type: string, enum: [active, disabled]}
+        expires_at: {type: integer, format: int64}
+        token_limit: {type: integer, format: int64, minimum: 0}
+        used_tokens: {type: integer, format: int64, minimum: 0}
+        revision: {type: integer, minimum: 1}
+    Channel:
+      type: object
+      required: [name, type, base_url, models, status, profile, revision]
+      properties:
+        name: {type: string}
+        type: {type: integer}
+        base_url: {type: string, format: uri}
+        key: {type: string, writeOnly: true}
+        models: {type: array, items: {type: string}, minItems: 1}
+        model_mapping: {type: object, additionalProperties: {type: string}}
+        status: {type: string, enum: [active, disabled]}
+        weight: {type: integer, minimum: 0}
+        priority: {type: integer}
+        profile: {$ref: '#/components/schemas/Profile'}
+        site_id: {type: string}
+        node_id: {type: string}
+        endpoint_id: {type: string}
+        max_concurrency: {type: integer, minimum: 0}
+        revision: {type: integer, minimum: 1}
+    Route:
+      type: object
+      required: [profile, model, channel_ids, status, revision]
+      properties:
+        profile: {$ref: '#/components/schemas/Profile'}
+        model: {type: string}
+        channel_ids: {type: string, description: Comma-separated control-plane channel IDs}
+        strategy: {type: string, enum: [priority], default: priority}
+        status: {type: string, enum: [active, disabled]}
+        revision: {type: integer, minimum: 1}
+    Profile:
+      type: string
+      enum: [aggregation, inference]
