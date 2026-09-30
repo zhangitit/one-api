@@ -16,6 +16,7 @@ OMIT_SUFFIXES = {'.pyc', '.pyo', '.log', '.key', '.pem', '.sqlite', '.db', '.bak
 REQUIRED = {
     'VERSION', 'go.mod', 'go.sum', 'main.go', 'Dockerfile.zeonexus', '.dockerignore',
     'README.ZeoNexus.md', 'deploy/docker-compose.1.1.yml', 'deploy/.env.example',
+    'deploy/nginx/zeonexus-gateway.conf.example',
     'docs/openapi-zeonexus-control.yaml', 'common/config/zeonexus.go',
     'middleware/zeonexus.go', 'model/zeonexus.go', 'router/zeonexus.go',
     'router/zeonexus_integration_test.go',

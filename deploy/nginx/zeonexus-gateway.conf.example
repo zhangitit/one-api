@@ -1,0 +1,69 @@
+# ZeoNexus public data-plane virtual hosts.
+# Install the production certificates before enabling this file. Keep the
+# control API on a private management address; never expose it on these hosts.
+upstream zeonexus_aggregation {
+    server 127.0.0.1:3101;
+    keepalive 64;
+}
+
+upstream zeonexus_inference {
+    server 127.0.0.1:3102;
+    keepalive 64;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name stack.zeotrue.com;
+
+    location = /healthz { proxy_pass http://zeonexus_aggregation; }
+    location = /readyz { proxy_pass http://zeonexus_aggregation; }
+    location /v1/ {
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_pass http://zeonexus_aggregation;
+    }
+    location / { return 404; }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name compute.zeotrue.com;
+
+    location = /healthz { proxy_pass http://zeonexus_inference; }
+    location = /readyz { proxy_pass http://zeonexus_inference; }
+    location /v1/ {
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_pass http://zeonexus_inference;
+    }
+    location / { return 404; }
+}
+
+# Replace the sample private addresses with the Console and management-network
+# addresses used in production. This virtual host must not be internet-facing.
+server {
+    listen 10.0.0.10:8443 ssl http2;
+    server_name gateway-control.internal;
+    allow 10.0.0.20;
+    deny all;
+
+    location /aggregation/internal/nexus/v1/ {
+        rewrite ^/aggregation(.*)$ $1 break;
+        proxy_set_header Host $host;
+        proxy_pass http://zeonexus_aggregation;
+    }
+    location /inference/internal/nexus/v1/ {
+        rewrite ^/inference(.*)$ $1 break;
+        proxy_set_header Host $host;
+        proxy_pass http://zeonexus_inference;
+    }
+    location / { return 404; }
+}

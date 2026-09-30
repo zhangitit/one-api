@@ -22,6 +22,17 @@ After adding both names to `/etc/hosts`, run `deploy/apache/install-local-vhosts
 
 ## Public API
 
+Production public endpoints:
+
+```text
+https://stack.zeotrue.com/v1   -> Aggregation Gateway
+https://compute.zeotrue.com/v1 -> Inference Gateway
+```
+
+These public domains terminate at Nginx/WAF and proxy to the loopback-only ports in the reference Compose file. They are not model-upstream allowlist entries.
+
+The release includes `deploy/nginx/zeonexus-gateway.conf.example`. Copy it into the production Nginx configuration, add the production certificate paths and management-network addresses, run `nginx -t`, then reload Nginx. The public virtual hosts expose only health probes and `/v1/`; the signed control API stays on its private management listener.
+
 ```text
 GET  /healthz
 GET  /readyz
