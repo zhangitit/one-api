@@ -141,7 +141,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 		for _, choice := range textResponse.Choices {
 			completionTokens += CountTokenText(choice.Message.StringContent(), modelName)
 		}
-		textResponse.Usage = model.Usage{
+		textResponse.Usage = model.Usage{Estimated: true,
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			TotalTokens:      promptTokens + completionTokens,

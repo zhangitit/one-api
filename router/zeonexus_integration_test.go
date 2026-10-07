@@ -36,7 +36,7 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 	config.ZeoNexusAllowedUpstreamHosts = []string{"127.0.0.1"}
 	config.ZeoNexusAllowInsecureHTTP = true
 	config.ZeoNexusMaxRequestBodyBytes = 1024
-	config.ZeoNexusMaxReserveTokens = 512
+	config.ZeoNexusMaxReserveTokens = 2048
 	config.EnforceIncludeUsage = true
 	config.ApproximateTokenEnabled = true
 	config.MemoryCacheEnabled = false
@@ -58,6 +58,35 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 	client.Init()
 	openai.InitTokenEncoders()
 
+	oldURL, oldHTTP := config.ZeoNexusConsoleControlURL, config.ZeoNexusConsoleAllowHTTP
+	defer func() { config.ZeoNexusConsoleControlURL, config.ZeoNexusConsoleAllowHTTP = oldURL, oldHTTP }()
+	var moneyReserves, moneyFinalizes atomic.Int32
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		digest := sha256.Sum256(data)
+		signed := strings.Join([]string{r.Method, r.URL.RequestURI(), r.Header.Get("X-Zeo-Timestamp"), r.Header.Get("X-Zeo-Nonce"), hex.EncodeToString(digest[:])}, "\n")
+		mac := hmac.New(sha256.New, []byte(config.ZeoNexusControlSecret))
+		mac.Write([]byte(signed))
+		if !hmac.Equal([]byte(r.Header.Get("X-Zeo-Signature")), []byte(hex.EncodeToString(mac.Sum(nil)))) {
+			t.Error("unsigned money operation")
+			w.WriteHeader(401)
+			return
+		}
+		switch r.URL.Path {
+		case "/billing/gateway/reserve":
+			moneyReserves.Add(1)
+		case "/billing/gateway/finalize":
+			moneyFinalizes.Add(1)
+		default:
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":{"charged":true,"status":"reserved"}}`)
+	}))
+	defer console.Close()
+	config.ZeoNexusConsoleControlURL = console.URL
+	config.ZeoNexusConsoleAllowHTTP = true
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
@@ -67,6 +96,9 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer upstream-secret" {
 			http.Error(w, "bad secret", http.StatusUnauthorized)
 			return
+		}
+		if moneyReserves.Load() <= upstreamCalls.Load() {
+			t.Error("upstream started before cash authorization")
 		}
 		upstreamCalls.Add(1)
 		body, _ := io.ReadAll(r.Body)
@@ -117,6 +149,32 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 		t.Fatalf("channel secret was not encrypted at rest: %q", stored.Key)
 	}
 
+	// A periodic configuration snapshot must preserve counters and measurements while a request is active.
+	if !model.AcquireZeoChannel(stored.Id) {
+		t.Fatal("could not reserve test concurrency")
+	}
+	if err = db.Model(&model.Channel{}).Where("id = ?", stored.Id).Updates(map[string]any{"used_quota": 17, "response_time": 333, "test_time": 1234}).Error; err != nil {
+		t.Fatal(err)
+	}
+	base, mapping := upstream.URL+"/v1", `{"demo-model":"upstream-model"}`
+	managed, err := model.UpsertZeoChannel("endpoint-1", 2, "inference", "site-1", "node-1", "endpoint-1", 4,
+		&model.Channel{Type: 50, Name: "Refreshed", Models: "demo-model", Group: "zeonexus-inference", Status: model.ChannelStatusEnabled, BaseURL: &base, ModelMapping: &mapping})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshed model.Channel
+	var refreshedManaged model.ZeoManagedChannel
+	if err = db.First(&refreshed, stored.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = db.First(&refreshedManaged, managed.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if refreshedManaged.ActiveRequests != 1 || refreshed.UsedQuota != 17 || refreshed.ResponseTime != 333 || refreshed.TestTime != 1234 {
+		t.Fatal("configuration sync erased live concurrency or telemetry")
+	}
+	model.ReleaseZeoChannel(stored.Id)
+
 	modelsResponse := publicRequest(t, engine, http.MethodGet, "/v1/models", rawKey, nil)
 	if modelsResponse.Code != http.StatusOK || !strings.Contains(modelsResponse.Body.String(), "demo-model") {
 		t.Fatalf("model list failed: %d %s", modelsResponse.Code, modelsResponse.Body.String())
@@ -131,7 +189,7 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 		t.Fatalf("oversized request returned %d: %s", tooLarge.Code, tooLarge.Body.String())
 	}
 	tooManyTokens := publicRequest(t, engine, http.MethodPost, "/v1/chat/completions", rawKey, map[string]any{
-		"model": "demo-model", "messages": []map[string]string{{"role": "user", "content": "hello"}}, "max_tokens": 1000,
+		"model": "demo-model", "messages": []map[string]string{{"role": "user", "content": "hello"}}, "max_tokens": 10000,
 	})
 	if tooManyTokens.Code != http.StatusBadRequest || !strings.Contains(tooManyTokens.Body.String(), "max_tokens_exceeded") {
 		t.Fatalf("excessive max_tokens returned %d: %s", tooManyTokens.Code, tooManyTokens.Body.String())
@@ -156,6 +214,9 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 		t.Fatalf("expected 2 upstream calls, got %d", upstreamCalls.Load())
 	}
 
+	if moneyReserves.Load() != 2 || moneyFinalizes.Load() != 2 {
+		t.Fatal("cash preauthorization and finalization missing")
+	}
 	wrongKey := publicRequest(t, engine, http.MethodGet, "/v1/models", "sk-nx-agg-"+strings.Repeat("b", 64), nil)
 	if wrongKey.Code != http.StatusUnauthorized || !strings.Contains(wrongKey.Body.String(), "invalid_api_key") {
 		t.Fatalf("wrong gateway key was not rejected: %d %s", wrongKey.Code, wrongKey.Body.String())

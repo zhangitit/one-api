@@ -14,6 +14,8 @@ import (
 var ZeoNexusEnabled = strings.EqualFold(os.Getenv("ZEO_NEXUS_ENABLED"), "true")
 var ZeoNexusProfile = strings.ToLower(strings.TrimSpace(os.Getenv("ZEO_NEXUS_PROFILE")))
 var ZeoNexusControlSecret = os.Getenv("ZEO_NEXUS_CONTROL_SECRET")
+var ZeoNexusConsoleControlURL = os.Getenv("ZEO_NEXUS_CONSOLE_CONTROL_URL")
+var ZeoNexusConsoleAllowHTTP = strings.EqualFold(os.Getenv("ZEO_NEXUS_CONSOLE_ALLOW_HTTP"), "true")
 var ZeoNexusMasterKey = os.Getenv("ZEO_NEXUS_MASTER_KEY")
 var ZeoNexusSignatureTTL = envDuration("ZEO_NEXUS_SIGNATURE_TTL_SECONDS", 300) * time.Second
 var ZeoNexusDefaultReserveTokens = envInt64("ZEO_NEXUS_DEFAULT_RESERVE_TOKENS", 8192)

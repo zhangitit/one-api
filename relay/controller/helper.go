@@ -156,9 +156,10 @@ func postConsumeQuota(c *gin.Context, usage *relaymodel.Usage, meta *meta.Meta, 
 	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 	model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	if config.ZeoNexusEnabled {
+		cached, cacheKnown := usage.CachedInput()
 		if err := model.CompleteZeoUsage(c.GetString(helper.RequestIdKey), meta.OriginModelName, meta.ActualModelName,
 			meta.ChannelId, promptTokens, completionTokens, helper.CalcElapsedTime(meta.StartTime),
-			c.GetInt64(ctxkey.ZeoFirstByteMs), meta.IsStream, c.Request.Context().Err() != nil); err != nil {
+			c.GetInt64(ctxkey.ZeoFirstByteMs), meta.IsStream, c.Request.Context().Err() != nil, cached, cacheKnown, usage.Estimated); err != nil {
 			logger.Error(ctx, "failed to settle ZeoNexus usage: "+err.Error())
 		}
 	}

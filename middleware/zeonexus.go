@@ -15,9 +15,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/billing"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/relaymode"
 )
@@ -121,13 +123,22 @@ func zeoNexusTokenAuth(c *gin.Context) {
 	}
 	if shouldCheckModel(c) {
 		expectedMode, modeErr := model.GetZeoRouteMode(requestModel, config.ZeoNexusProfile)
-		if modeErr != nil || expectedMode != relaymode.Name(relaymode.GetByPath(c.Request.URL.Path)) {
+		if modeErr != nil {
+			zeoAbort(c, http.StatusServiceUnavailable, "model_unavailable", "模型服务暂不可用：路由尚未发布、已停用或端点离线")
+			return
+		}
+		if expectedMode != relaymode.Name(relaymode.GetByPath(c.Request.URL.Path)) {
 			zeoAbort(c, http.StatusBadRequest, "model_mode_mismatch", "模型与 API 类型不匹配")
 			return
 		}
 	}
 	requestId := c.GetString(helper.RequestIdKey)
-	reserve := estimateZeoReservation(c)
+	promptBound, outputBound, boundErr := prepareZeoReservation(c)
+	if boundErr != nil {
+		zeoAbort(c, http.StatusBadRequest, "invalid_request", boundErr.Error())
+		return
+	}
+	reserve := promptBound + outputBound
 	if c.Request.Method == http.MethodGet {
 		reserve = 0
 	}
@@ -154,6 +165,16 @@ func zeoNexusTokenAuth(c *gin.Context) {
 			zeoAbort(c, http.StatusForbidden, "quota_exceeded", "租户、API 密钥或模型额度不足")
 			return
 		}
+		if err := model.ReserveZeoMoney(c.Request.Context(), credential, grant, requestId, requestModel, promptBound, outputBound); err != nil {
+			_ = model.FailZeoUsage(requestId, "billing_rejected", 503, time.Since(start).Milliseconds(), 0)
+			_ = model.FinalizeZeoMoney(requestId)
+			status, message := http.StatusServiceUnavailable, "资金预占服务暂时不可用"
+			if e, ok := err.(*billing.Error); ok {
+				status, message = e.Status, e.Message
+			}
+			zeoAbort(c, status, "billing_rejected", message)
+			return
+		}
 	}
 	c.Set(ctxkey.RequestModel, requestModel)
 	c.Set(ctxkey.Id, token.UserId)
@@ -178,9 +199,16 @@ func zeoNexusTokenAuth(c *gin.Context) {
 			} else {
 				_ = model.FailZeoUsage(requestId, "relay_error", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
 			}
-		} else {
-			// The usage handler normally settles this first; FailZeoUsage is idempotent.
-			_ = model.FailZeoUsage(requestId, "usage_missing", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
+        } else if c.GetInt(ctxkey.ChannelId) > 0 {
+            // HTTP 200 alone does not prove usage. Completed rows are idempotent;
+            // an interrupted stream without a final usage frame must remain a liability.
+            _ = model.ReconcileZeoUsage(requestId, "upstream_usage_unknown", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
+        } else {
+            _ = model.FailZeoUsage(requestId, "usage_missing", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
+        }
+		if err := model.FinalizeZeoMoney(requestId); err != nil {
+			// Do not log URLs, signed headers or request text. The durable usage cursor retries settlement.
+			logger.SysError("Money finalization pending for request " + requestId)
 		}
 	}
 }
@@ -191,25 +219,47 @@ func zeoAbort(c *gin.Context, status int, code, message string) {
 	c.Abort()
 }
 
-func estimateZeoReservation(c *gin.Context) int64 {
+// Enforce the bound sent to the upstream as well as reserving it. Counting UTF-8 bytes
+// overestimates text tokens; image/audio/tool inputs without a supported bound fail closed.
+func prepareZeoReservation(c *gin.Context) (int64, int64, error) {
+	if c.Request.Method == http.MethodGet {
+		return 0, 0, nil
+	}
 	body, err := common.GetRequestBody(c)
 	if err != nil {
-		return config.ZeoNexusDefaultReserveTokens
+		return 0, 0, fmt.Errorf("无法读取请求体")
 	}
-	var request struct {
-		MaxTokens           int64 `json:"max_tokens"`
-		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+	var request map[string]json.RawMessage
+	if json.Unmarshal(body, &request) != nil {
+		return 0, 0, fmt.Errorf("请求体必须是 JSON 对象")
 	}
-	_ = json.Unmarshal(body, &request)
-	output := request.MaxTokens
-	if request.MaxCompletionTokens > output {
-		output = request.MaxCompletionTokens
-	}
-	if output <= 0 {
+	mode := relaymode.Name(relaymode.GetByPath(c.Request.URL.Path))
+	output := int64(0)
+	if mode == "chat" {
 		output = config.ZeoNexusDefaultReserveTokens
+		for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+			if value, exists := request[key]; exists {
+				var n int64
+				if json.Unmarshal(value, &n) != nil || n <= 0 {
+					return 0, 0, fmt.Errorf("最大输出 Token 必须为正整数")
+				}
+				output = n
+			}
+		}
+		// Tool schemas count towards the conservative byte bound. Binary vision inputs do not.
+		if bytes.Contains(body, []byte(`"image_url"`)) || bytes.Contains(body, []byte(`"input_audio"`)) {
+			return 0, 0, fmt.Errorf("此网关暂不支持无法预估预算的图像或音频输入")
+		}
+		request["max_tokens"] = json.RawMessage(strconv.FormatInt(output, 10))
+		body, err = json.Marshal(request)
+		if err != nil {
+			return 0, 0, err
+		}
+		c.Set(ctxkey.KeyRequestBody, body)
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	reserve := output + int64(len(body)/4+256)
-	return reserve
+	// Token arrays can include one token per integer, still bounded by their serialized bytes.
+	return int64(len(body)) + 1024, output, nil
 }
 
 type firstByteWriter struct {

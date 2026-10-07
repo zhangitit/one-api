@@ -36,6 +36,7 @@ func Distribute() func(c *gin.Context) {
 			}
 			channel, err = model.GetZeoSatisfiedChannel(requestModel, config.ZeoNexusProfile, c.GetString(ctxkey.ZeoAllowedSites), 0)
 			if err != nil {
+				logger.SysError(fmt.Sprintf("ZeoNexus channel selection failed for model %s: %v", requestModel, err))
 				zeoAbort(c, http.StatusServiceUnavailable, "model_unavailable", fmt.Sprintf("模型 %s 当前没有可用渠道", requestModel))
 				return
 			}

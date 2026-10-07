@@ -1,0 +1,1 @@
+WebP decoding fixture from golang.org/x/image v0.18.0/testdata/yellow_rose.lossy.webp. BSD license included. Other images are generated locally by the test.

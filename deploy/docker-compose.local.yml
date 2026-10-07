@@ -1,0 +1,7 @@
+services:
+  gateway-aggregation:
+    extra_hosts:
+      - "zeonexus.kevin.com:host-gateway"
+  gateway-inference:
+    extra_hosts:
+      - "zeonexus.kevin.com:host-gateway"

@@ -9,7 +9,7 @@ import (
 )
 
 func ResponseText2Usage(responseText string, modelName string, promptTokens int) *model.Usage {
-	usage := &model.Usage{}
+	usage := &model.Usage{Estimated: true}
 	usage.PromptTokens = promptTokens
 	usage.CompletionTokens = CountTokenText(responseText, modelName)
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

@@ -14,8 +14,8 @@ Run two isolated instances with separate databases and Redis namespaces. `deploy
 The optional Apache templates in `deploy/apache` map the local development domains to the two loopback-only Gateway ports:
 
 ```text
-api.kevin.com     -> 127.0.0.1:3101 (aggregation)
-compute.kevin.com -> 127.0.0.1:3102 (inference)
+oneapi.kevin.com   -> 127.0.0.1:3101 (aggregation)
+stack.kevin.com -> 127.0.0.1:3102 (inference)
 ```
 
 After adding both names to `/etc/hosts`, run `deploy/apache/install-local-vhosts.sh` with administrator privileges. The script enables Apache `mod_proxy_http`, installs both virtual hosts, validates the Apache configuration and performs a graceful reload.
@@ -25,8 +25,8 @@ After adding both names to `/etc/hosts`, run `deploy/apache/install-local-vhosts
 Production public endpoints:
 
 ```text
-https://stack.zeotrue.com/v1   -> Aggregation Gateway
-https://compute.zeotrue.com/v1 -> Inference Gateway
+https://oneapi.zeotrue.com/v1   -> Aggregation Gateway
+https://stack.zeotrue.com/v1 -> Inference Gateway
 ```
 
 These public domains terminate at Nginx/WAF and proxy to the loopback-only ports in the reference Compose file. They are not model-upstream allowlist entries.

@@ -141,6 +141,9 @@ type ZeoUsage struct {
 	EndpointId         string `json:"endpoint_id" gorm:"size:80"`
 	Status             string `json:"status" gorm:"size:20;index"`
 	ReservedTokens     int64  `json:"reserved_tokens"`
+	CachedTokens       int    `json:"cached_tokens"`
+	CacheUsageKnown    bool   `json:"cache_usage_known"`
+	UsageEstimated     bool   `json:"usage_estimated"`
 	PromptTokens       int    `json:"prompt_tokens"`
 	CompletionTokens   int    `json:"completion_tokens"`
 	TotalTokens        int    `json:"total_tokens"`
@@ -630,7 +633,7 @@ func ReserveZeoUsage(credential *ZeoCredential, grant *ZeoGrant, requestId, mode
 	return policyError
 }
 
-func CompleteZeoUsage(requestId, model, upstreamModel string, channelId, prompt, completion int, durationMs, firstByteMs int64, isStream, clientDisconnected bool) error {
+func CompleteZeoUsage(requestId, model, upstreamModel string, channelId, prompt, completion int, durationMs, firstByteMs int64, isStream, clientDisconnected bool, cached int, cacheKnown, estimated bool) error {
 	total := prompt + completion
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var usage ZeoUsage
@@ -654,7 +657,12 @@ func CompleteZeoUsage(requestId, model, upstreamModel string, channelId, prompt,
 		}
 		var managed ZeoManagedChannel
 		_ = tx.Where("channel_id = ?", channelId).First(&managed).Error
-		updates := map[string]any{"status": ZeoUsageSuccess, "model": model, "upstream_model": upstreamModel,
+		status := ZeoUsageSuccess
+		// Estimated usage is useful for operational Token caps, but cannot authorize a cash debit.
+		if estimated {
+			status = ZeoUsageReconcile
+		}
+		updates := map[string]any{"status": status, "cached_tokens": cached, "cache_usage_known": cacheKnown, "usage_estimated": estimated, "model": model, "upstream_model": upstreamModel,
 			"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total,
 			"duration_ms": durationMs, "first_byte_ms": firstByteMs, "is_stream": isStream, "http_status": 200,
 			"channel_ref": managed.ExternalId, "site_id": managed.SiteId, "node_id": managed.NodeId,
@@ -810,8 +818,28 @@ func GetZeoUsage(after uint64, limit int) ([]ZeoUsage, error) {
 	if limit < 1 || limit > 500 {
 		limit = 200
 	}
+	// A crash can leave a pending gap. Quarantine stale work without refunding unknown upstream usage.
+	var stale []ZeoUsage
+	if err := DB.Where("status = ? AND created_at < ?", ZeoUsagePending, time.Now().Add(-15*time.Minute).Unix()).Limit(100).Find(&stale).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range stale {
+		if err := ReconcileZeoUsage(row.RequestId, "gateway_process_interrupted", 503, 0, 0); err != nil {
+			return nil, err
+		}
+	}
+	// Do not move the import watermark past an in-flight row; that row may finish after newer IDs.
+	var pending ZeoUsage
+	err := DB.Where("status = ?", ZeoUsagePending).Order("id asc").First(&pending).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	query := DB.Where("id > ? AND status <> ?", after, ZeoUsagePending)
+	if pending.Id > 0 {
+		query = query.Where("id < ?", pending.Id)
+	}
 	var rows []ZeoUsage
-	err := DB.Where("id > ? AND status <> ?", after, ZeoUsagePending).Order("id asc").Limit(limit).Find(&rows).Error
+	err = query.Order("id asc").Limit(limit).Find(&rows).Error
 	return rows, err
 }
 
@@ -856,7 +884,7 @@ func UpsertZeoChannel(externalId string, revision uint, profile, siteId, nodeId,
 	}
 	var managed ZeoManagedChannel
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		err := tx.Where("external_id = ?", externalId).First(&managed).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("external_id = ?", externalId).First(&managed).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
@@ -872,7 +900,9 @@ func UpsertZeoChannel(externalId string, revision uint, profile, siteId, nodeId,
 			if channel.Key == "" {
 				channel.Key = current.Key
 			}
-			if err := tx.Model(&Channel{}).Where("id = ?", managed.ChannelId).Save(channel).Error; err != nil {
+			// Configuration sync must not erase live quota/latency measurements from relay workers.
+			if err := tx.Model(&Channel{}).Where("id = ?", managed.ChannelId).
+				Omit("created_time", "test_time", "response_time", "used_quota", "balance", "balance_updated_time").Save(channel).Error; err != nil {
 				return err
 			}
 			if err := tx.Where("channel_id = ?", managed.ChannelId).Delete(&Ability{}).Error; err != nil {
@@ -894,7 +924,14 @@ func UpsertZeoChannel(externalId string, revision uint, profile, siteId, nodeId,
 		managed.ExternalId, managed.Profile, managed.SiteId = externalId, profile, siteId
 		managed.NodeId, managed.EndpointId, managed.MaxConcurrency = nodeId, endpointId, maxConcurrency
 		managed.Revision, managed.UpdatedAt = revision, time.Now().Unix()
-		return tx.Save(&managed).Error
+		if managed.Id == 0 {
+			return tx.Create(&managed).Error
+		}
+		// ActiveRequests is owned by Acquire/Release, never by the control-plane snapshot.
+		return tx.Model(&ZeoManagedChannel{}).Where("id = ?", managed.Id).Updates(map[string]any{
+			"profile": profile, "site_id": siteId, "node_id": nodeId, "endpoint_id": endpointId,
+			"max_concurrency": maxConcurrency, "revision": revision, "updated_at": managed.UpdatedAt,
+		}).Error
 	})
 	if err == nil && config.MemoryCacheEnabled {
 		InitChannelCache()

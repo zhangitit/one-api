@@ -1,12 +1,17 @@
 package image_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"github.com/songquanpeng/one-api/common/client"
 	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
+	"net/http/httptest"
+	"os"
+
 	"io"
 	"net/http"
 	"strconv"
@@ -16,6 +21,7 @@ import (
 	img "github.com/songquanpeng/one-api/common/image"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	_ "golang.org/x/image/webp"
 )
 
@@ -30,24 +36,58 @@ func (r *CountingReader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-var (
-	cases = []struct {
-		url    string
-		format string
-		width  int
-		height int
-	}{
-		{"https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg", "jpeg", 2560, 1669},
-		{"https://upload.wikimedia.org/wikipedia/commons/9/97/Basshunter_live_performances.png", "png", 4500, 2592},
-		{"https://upload.wikimedia.org/wikipedia/commons/c/c6/TO_THE_ONE_SOMETHINGNESS.webp", "webp", 984, 985},
-		{"https://upload.wikimedia.org/wikipedia/commons/d/d0/01_Das_Sandberg-Modell.gif", "gif", 1917, 1533},
-		{"https://upload.wikimedia.org/wikipedia/commons/6/62/102Cervus.jpg", "jpeg", 270, 230},
-	}
-)
+var cases []struct {
+	url, format   string
+	width, height int
+}
 
 func TestMain(m *testing.M) {
 	client.Init()
-	m.Run()
+	imageData := image.NewRGBA(image.Rect(0, 0, 17, 13))
+	imageData.Set(0, 0, color.RGBA{255, 0, 0, 255})
+	content := map[string][]byte{}
+	for _, format := range []string{"jpeg", "png", "gif"} {
+		var buffer bytes.Buffer
+		var err error
+		switch format {
+		case "jpeg":
+			err = jpeg.Encode(&buffer, imageData, nil)
+		case "png":
+			err = png.Encode(&buffer, imageData)
+		case "gif":
+			err = gif.Encode(&buffer, imageData, nil)
+		}
+		if err != nil {
+			panic(err)
+		}
+		content[format] = buffer.Bytes()
+	}
+	webp, err := os.ReadFile("testdata/yellow_rose.lossy.webp")
+	if err != nil {
+		panic(err)
+	}
+	content["webp"] = webp
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := content[strings.TrimPrefix(r.URL.Path, "/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(data)
+	}))
+	for _, format := range []string{"jpeg", "png", "gif", "webp"} {
+		width, height := 17, 13
+		if format == "webp" {
+			width, height = 400, 301
+		}
+		cases = append(cases, struct {
+			url, format   string
+			width, height int
+		}{server.URL + "/" + format, format, width, height})
+	}
+	code := m.Run()
+	server.Close()
+	os.Exit(code)
 }
 
 func TestDecode(t *testing.T) {
@@ -60,11 +100,11 @@ func TestDecode(t *testing.T) {
 	for _, c := range cases {
 		t.Run("Decode:"+c.format, func(t *testing.T) {
 			resp, err := http.Get(c.url)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			defer resp.Body.Close()
 			reader := &CountingReader{reader: resp.Body}
 			img, format, err := image.Decode(reader)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			size := img.Bounds().Size()
 			assert.Equal(t, c.format, format)
 			assert.Equal(t, c.width, size.X)
@@ -82,11 +122,11 @@ func TestDecode(t *testing.T) {
 	for _, c := range cases {
 		t.Run("DecodeConfig:"+c.format, func(t *testing.T) {
 			resp, err := http.Get(c.url)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			defer resp.Body.Close()
 			reader := &CountingReader{reader: resp.Body}
 			config, format, err := image.DecodeConfig(reader)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, c.format, format)
 			assert.Equal(t, c.width, config.Width)
 			assert.Equal(t, c.height, config.Height)
@@ -105,15 +145,15 @@ func TestBase64(t *testing.T) {
 	for _, c := range cases {
 		t.Run("Decode:"+c.format, func(t *testing.T) {
 			resp, err := http.Get(c.url)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			defer resp.Body.Close()
 			data, err := io.ReadAll(resp.Body)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			encoded := base64.StdEncoding.EncodeToString(data)
 			body := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
 			reader := &CountingReader{reader: body}
 			img, format, err := image.Decode(reader)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			size := img.Bounds().Size()
 			assert.Equal(t, c.format, format)
 			assert.Equal(t, c.width, size.X)
@@ -131,15 +171,15 @@ func TestBase64(t *testing.T) {
 	for _, c := range cases {
 		t.Run("DecodeConfig:"+c.format, func(t *testing.T) {
 			resp, err := http.Get(c.url)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			defer resp.Body.Close()
 			data, err := io.ReadAll(resp.Body)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			encoded := base64.StdEncoding.EncodeToString(data)
 			body := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
 			reader := &CountingReader{reader: body}
 			config, format, err := image.DecodeConfig(reader)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, c.format, format)
 			assert.Equal(t, c.width, config.Width)
 			assert.Equal(t, c.height, config.Height)
@@ -152,7 +192,7 @@ func TestGetImageSize(t *testing.T) {
 	for i, c := range cases {
 		t.Run("Decode:"+strconv.Itoa(i), func(t *testing.T) {
 			width, height, err := img.GetImageSize(c.url)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, c.width, width)
 			assert.Equal(t, c.height, height)
 		})
@@ -163,13 +203,13 @@ func TestGetImageSizeFromBase64(t *testing.T) {
 	for i, c := range cases {
 		t.Run("Decode:"+strconv.Itoa(i), func(t *testing.T) {
 			resp, err := http.Get(c.url)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			defer resp.Body.Close()
 			data, err := io.ReadAll(resp.Body)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			encoded := base64.StdEncoding.EncodeToString(data)
 			width, height, err := img.GetImageSizeFromBase64(encoded)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, c.width, width)
 			assert.Equal(t, c.height, height)
 		})

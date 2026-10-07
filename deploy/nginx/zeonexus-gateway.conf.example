@@ -13,7 +13,7 @@ upstream zeonexus_inference {
 
 server {
     listen 443 ssl http2;
-    server_name stack.zeotrue.com;
+    server_name oneapi.zeotrue.com;
 
     location = /healthz { proxy_pass http://zeonexus_aggregation; }
     location = /readyz { proxy_pass http://zeonexus_aggregation; }
@@ -31,7 +31,7 @@ server {
 
 server {
     listen 443 ssl http2;
-    server_name compute.zeotrue.com;
+    server_name stack.zeotrue.com;
 
     location = /healthz { proxy_pass http://zeonexus_inference; }
     location = /readyz { proxy_pass http://zeonexus_inference; }
