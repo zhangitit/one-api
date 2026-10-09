@@ -633,6 +633,15 @@ func ReserveZeoUsage(credential *ZeoCredential, grant *ZeoGrant, requestId, mode
 	return policyError
 }
 
+func GetZeoUsageByRequest(requestId string) (*ZeoUsage, error) {
+	var row ZeoUsage
+	err := DB.Where("request_id = ? AND profile = ?", requestId, config.ZeoNexusProfile).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &row, err
+}
+
 func CompleteZeoUsage(requestId, model, upstreamModel string, channelId, prompt, completion int, durationMs, firstByteMs int64, isStream, clientDisconnected bool, cached int, cacheKnown, estimated bool) error {
 	total := prompt + completion
 	return DB.Transaction(func(tx *gorm.DB) error {
@@ -640,20 +649,27 @@ func CompleteZeoUsage(requestId, model, upstreamModel string, channelId, prompt,
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id = ?", requestId).First(&usage).Error; err != nil {
 			return err
 		}
-		if usage.Status != ZeoUsagePending {
+		if usage.Status != ZeoUsagePending && (usage.Status != ZeoUsageReconcile || estimated) {
 			return nil
 		}
-		if err := tx.Model(&ZeoCredential{}).Where("id = ?", usage.CredentialId).Updates(map[string]any{
-			"reserved_tokens": gorm.Expr("CASE WHEN reserved_tokens >= ? THEN reserved_tokens - ? ELSE 0 END", usage.ReservedTokens, usage.ReservedTokens),
-			"used_tokens":     gorm.Expr("used_tokens + ?", total), "updated_at": time.Now().Unix(),
-		}).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&ZeoGrant{}).Where("id = ?", usage.GrantId).Updates(map[string]any{
-			"reserved_tokens": gorm.Expr("CASE WHEN reserved_tokens >= ? THEN reserved_tokens - ? ELSE 0 END", usage.ReservedTokens, usage.ReservedTokens),
-			"used_tokens":     gorm.Expr("used_tokens + ?", total), "updated_at": time.Now().Unix(),
-		}).Error; err != nil {
-			return err
+
+		for _, target := range []any{&ZeoCredential{}, &ZeoGrant{}} {
+			id := usage.CredentialId
+			if _, ok := target.(*ZeoGrant); ok {
+				id = usage.GrantId
+			}
+			updates := map[string]any{"updated_at": time.Now().Unix()}
+			if usage.Status == ZeoUsagePending {
+				updates["reserved_tokens"] = gorm.Expr("CASE WHEN reserved_tokens >= ? THEN reserved_tokens - ? ELSE 0 END", usage.ReservedTokens, usage.ReservedTokens)
+				updates["used_tokens"] = gorm.Expr("used_tokens + ?", total)
+			} else {
+				// Replace the former conservative/estimated count, rather than charging both.
+				delta := int64(total) - int64(usage.TotalTokens)
+				updates["used_tokens"] = gorm.Expr("CASE WHEN used_tokens + ? >= 0 THEN used_tokens + ? ELSE 0 END", delta, delta)
+			}
+			if err := tx.Model(target).Where("id = ?", id).Updates(updates).Error; err != nil {
+				return err
+			}
 		}
 		var managed ZeoManagedChannel
 		_ = tx.Where("channel_id = ?", channelId).First(&managed).Error
@@ -664,7 +680,7 @@ func CompleteZeoUsage(requestId, model, upstreamModel string, channelId, prompt,
 		}
 		updates := map[string]any{"status": status, "cached_tokens": cached, "cache_usage_known": cacheKnown, "usage_estimated": estimated, "model": model, "upstream_model": upstreamModel,
 			"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total,
-			"duration_ms": durationMs, "first_byte_ms": firstByteMs, "is_stream": isStream, "http_status": 200,
+			"error_code": "", "duration_ms": durationMs, "first_byte_ms": firstByteMs, "is_stream": isStream, "http_status": 200,
 			"channel_ref": managed.ExternalId, "site_id": managed.SiteId, "node_id": managed.NodeId,
 			"endpoint_id": managed.EndpointId, "client_disconnected": clientDisconnected, "completed_at": time.Now().Unix()}
 		return tx.Model(&usage).Updates(updates).Error

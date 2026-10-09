@@ -3,8 +3,10 @@ package openai
 import (
 	"errors"
 	"fmt"
+	"github.com/songquanpeng/one-api/common/config"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -24,10 +26,12 @@ import (
 
 type Adaptor struct {
 	ChannelType int
+	BaseURL     string
 }
 
 func (a *Adaptor) Init(meta *meta.Meta) {
 	a.ChannelType = meta.ChannelType
+	a.BaseURL = meta.BaseURL
 }
 
 func (a *Adaptor) GetRequestURL(meta *meta.Meta) (string, error) {
@@ -84,6 +88,24 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *me
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
+	}
+	// Bailian max_tokens caps the answer only; its max_completion_tokens also caps reasoning.
+	// Keep the gateway's cash/Token reservation bound identical to the upstream total-output cap.
+	base, _ := url.Parse(a.BaseURL)
+	host := ""
+	if base != nil {
+		host = strings.ToLower(base.Hostname())
+	}
+	bailian := a.ChannelType == channeltype.AliBailian || strings.HasSuffix(host, ".aliyuncs.com")
+	if config.ZeoNexusEnabled && bailian && strings.HasPrefix(strings.ToLower(request.Model), "qwen") {
+		bound := request.MaxTokens
+		if request.MaxCompletionTokens != nil && (bound <= 0 || *request.MaxCompletionTokens < bound) {
+			bound = *request.MaxCompletionTokens
+		}
+		if bound > 0 {
+			request.MaxCompletionTokens = &bound
+			request.MaxTokens = 0
+		}
 	}
 	if request.Stream {
 		// always return usage in stream mode

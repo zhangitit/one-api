@@ -241,6 +241,14 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 	if credential.UsedTokens != 19 || grant.UsedTokens != 19 || credential.ReservedTokens != 0 || grant.ReservedTokens != 0 {
 		t.Fatalf("quota settlement mismatch: credential=%+v grant=%+v", credential, grant)
 	}
+
+	var usageRow model.ZeoUsage
+	db.First(&usageRow)
+	details := controlJSON(t, engine, http.MethodGet, "/internal/nexus/v1/usage/"+usageRow.RequestId, nil, http.StatusOK)
+	if !strings.Contains(details, `"request_id":"`+usageRow.RequestId+`"`) {
+		t.Fatal("signed per-request lookup failed")
+	}
+	controlJSON(t, engine, http.MethodGet, "/internal/nexus/v1/usage/missing-request-00001", nil, http.StatusNotFound)
 	reconciliation := controlJSON(t, engine, http.MethodGet, "/internal/nexus/v1/usage-reconciliation", nil, http.StatusOK)
 	if !strings.Contains(reconciliation, `"external_id":"key-1","used_tokens":19,"reserved_tokens":0`) ||
 		!strings.Contains(reconciliation, `"external_id":"grant-1","used_tokens":19,"reserved_tokens":0`) ||
@@ -315,6 +323,36 @@ func TestZeoNexusGatewayControlAndRelay(t *testing.T) {
 	engine.ServeHTTP(second, req.Clone(req.Context()))
 	if first.Code != http.StatusOK || second.Code != http.StatusConflict {
 		t.Fatalf("HMAC replay check failed: %d/%d", first.Code, second.Code)
+	}
+	{
+		var lateBase model.ZeoUsage
+		db.First(&lateBase)
+		var cred model.ZeoCredential
+		var grant model.ZeoGrant
+		db.First(&cred, lateBase.CredentialId)
+		db.First(&grant, lateBase.GrantId)
+		oldCred, oldGrant := cred.UsedTokens, grant.UsedTokens
+		pending := model.ZeoUsage{RequestId: "late-actual-request-00001", CredentialId: lateBase.CredentialId, GrantId: lateBase.GrantId, Profile: "inference", Model: "demo-model", Status: model.ZeoUsagePending, ReservedTokens: 300}
+		db.Create(&pending)
+		db.Model(&cred).Update("reserved_tokens", 300)
+		db.Model(&grant).Update("reserved_tokens", 300)
+		if err := model.ReconcileZeoUsage(pending.RequestId, "upstream_usage_unknown", 200, 100, 5); err != nil {
+			t.Fatal(err)
+		}
+		if err := model.CompleteZeoUsage(pending.RequestId, "demo-model", "upstream-model", 1, 10, 20, 100, 5, true, false, 0, true, false); err != nil {
+			t.Fatal(err)
+		}
+		db.First(&cred, lateBase.CredentialId)
+		db.First(&grant, lateBase.GrantId)
+		if cred.UsedTokens != oldCred+30 || grant.UsedTokens != oldGrant+30 {
+			t.Fatal("late actual usage did not replace conservative caps")
+		}
+		model.CompleteZeoUsage(pending.RequestId, "demo-model", "upstream-model", 1, 10, 20, 100, 5, true, false, 0, true, false)
+		db.First(&cred, lateBase.CredentialId)
+		if cred.UsedTokens != oldCred+30 {
+			t.Fatal("late usage was counted twice")
+		}
+
 	}
 }
 

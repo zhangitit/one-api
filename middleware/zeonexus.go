@@ -199,13 +199,13 @@ func zeoNexusTokenAuth(c *gin.Context) {
 			} else {
 				_ = model.FailZeoUsage(requestId, "relay_error", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
 			}
-        } else if c.GetInt(ctxkey.ChannelId) > 0 {
-            // HTTP 200 alone does not prove usage. Completed rows are idempotent;
-            // an interrupted stream without a final usage frame must remain a liability.
-            _ = model.ReconcileZeoUsage(requestId, "upstream_usage_unknown", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
-        } else {
-            _ = model.FailZeoUsage(requestId, "usage_missing", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
-        }
+		} else if c.GetInt(ctxkey.ChannelId) > 0 {
+			// HTTP 200 alone does not prove usage. Completed rows are idempotent;
+			// an interrupted stream without a final usage frame must remain a liability.
+			_ = model.ReconcileZeoUsage(requestId, "upstream_usage_unknown", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
+		} else {
+			_ = model.FailZeoUsage(requestId, "usage_missing", status, time.Since(start).Milliseconds(), c.GetInt64(ctxkey.ZeoFirstByteMs))
+		}
 		if err := model.FinalizeZeoMoney(requestId); err != nil {
 			// Do not log URLs, signed headers or request text. The durable usage cursor retries settlement.
 			logger.SysError("Money finalization pending for request " + requestId)
@@ -237,13 +237,17 @@ func prepareZeoReservation(c *gin.Context) (int64, int64, error) {
 	output := int64(0)
 	if mode == "chat" {
 		output = config.ZeoNexusDefaultReserveTokens
+		provided := false
 		for _, key := range []string{"max_tokens", "max_completion_tokens"} {
 			if value, exists := request[key]; exists {
 				var n int64
 				if json.Unmarshal(value, &n) != nil || n <= 0 {
 					return 0, 0, fmt.Errorf("最大输出 Token 必须为正整数")
 				}
-				output = n
+				if !provided || n < output {
+					output = n
+				}
+				provided = true
 			}
 		}
 		// Tool schemas count towards the conservative byte bound. Binary vision inputs do not.
@@ -251,6 +255,9 @@ func prepareZeoReservation(c *gin.Context) (int64, int64, error) {
 			return 0, 0, fmt.Errorf("此网关暂不支持无法预估预算的图像或音频输入")
 		}
 		request["max_tokens"] = json.RawMessage(strconv.FormatInt(output, 10))
+		if _, exists := request["max_completion_tokens"]; exists {
+			request["max_completion_tokens"] = request["max_tokens"]
+		}
 		body, err = json.Marshal(request)
 		if err != nil {
 			return 0, 0, err

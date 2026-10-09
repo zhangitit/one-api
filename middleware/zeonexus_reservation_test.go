@@ -35,3 +35,18 @@ func TestEnforcedOutputBound(t *testing.T) {
 		}
 	}
 }
+
+func TestBothOutputLimitsUseSmallerBound(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"qwen3.8-max","messages":[],"max_tokens":16,"max_completion_tokens":256}`))
+	_, out, err := prepareZeoReservation(c)
+	if err != nil || out != 16 {
+		t.Fatalf("larger parameter bypassed bound: %d %v", out, err)
+	}
+	normalized, _ := common.GetRequestBody(c)
+	var data map[string]int64
+	json.Unmarshal(normalized, &data)
+	if data["max_tokens"] != 16 || data["max_completion_tokens"] != 16 {
+		t.Fatal("inconsistent downstream output caps")
+	}
+}

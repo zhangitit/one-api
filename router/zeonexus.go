@@ -23,6 +23,7 @@ func SetZeoNexusRouter(router *gin.Engine) {
 		internal.POST("/channels/:id/test", controller.ZeoNexusTestChannel)
 		internal.PUT("/routes/:id", controller.ZeoNexusUpsertRoute)
 		internal.GET("/usage", controller.ZeoNexusUsage)
+		internal.GET("/usage/:id", controller.ZeoNexusUsageByRequest)
 		internal.GET("/usage-reconciliation", controller.ZeoNexusUsageReconciliation)
 	}
 }

@@ -344,6 +344,25 @@ func ZeoNexusUsage(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": rows, "next_cursor": next, "has_more": len(rows) == limit && limit > 0})
 }
 
+// Signed request lookup recovers late usage without rewinding an already committed import cursor.
+func ZeoNexusUsageByRequest(c *gin.Context) {
+	id := c.Param("id")
+	if len(id) < 12 || len(id) > 80 {
+		internalError(c, http.StatusBadRequest, fmt.Errorf("invalid request id"))
+		return
+	}
+	row, err := model.GetZeoUsageByRequest(id)
+	if err != nil {
+		internalError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if row == nil {
+		internalError(c, http.StatusNotFound, fmt.Errorf("usage not found"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": row})
+}
+
 func ZeoNexusUsageReconciliation(c *gin.Context) {
 	result, err := model.GetZeoUsageReconciliation()
 	if err != nil {
