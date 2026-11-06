@@ -138,14 +138,13 @@ func zeoNexusTokenAuth(c *gin.Context) {
 		zeoAbort(c, http.StatusBadRequest, "invalid_request", boundErr.Error())
 		return
 	}
-	reserve := promptBound + outputBound
-	if c.Request.Method == http.MethodGet {
-		reserve = 0
-	}
-	if reserve > config.ZeoNexusMaxReserveTokens {
+	// Check the components before addition: a client-supplied int64 maximum
+	// must not wrap the total negative and bypass both quota and cash reserves.
+	if promptBound < 0 || outputBound < 0 || promptBound > config.ZeoNexusMaxReserveTokens || outputBound > config.ZeoNexusMaxReserveTokens-promptBound {
 		zeoAbort(c, http.StatusBadRequest, "max_tokens_exceeded", "请求的最大输出 Token 超过网关限制")
 		return
 	}
+	reserve := promptBound + outputBound
 	if grant != nil {
 		if policyLimit := model.GetZeoMaxRequestTokens(credential, grant); policyLimit > 0 && reserve > policyLimit {
 			zeoAbort(c, http.StatusBadRequest, "max_tokens_exceeded", "请求的最大输出 Token 超过当前额度策略")
@@ -214,6 +213,11 @@ func zeoNexusTokenAuth(c *gin.Context) {
 }
 
 func zeoAbort(c *gin.Context, status int, code, message string) {
+	if helper.IsAnthropicMessagesPath(c.Request.URL.Path) {
+		helper.WriteAnthropicError(c, status, helper.MessageWithRequestId(message, c.GetString(helper.RequestIdKey)))
+		c.Abort()
+		return
+	}
 	c.JSON(status, gin.H{"error": gin.H{"message": helper.MessageWithRequestId(message, c.GetString(helper.RequestIdKey)),
 		"type": "invalid_request_error", "code": code}})
 	c.Abort()
@@ -232,6 +236,21 @@ func prepareZeoReservation(c *gin.Context) (int64, int64, error) {
 	var request map[string]json.RawMessage
 	if json.Unmarshal(body, &request) != nil {
 		return 0, 0, fmt.Errorf("请求体必须是 JSON 对象")
+	}
+	if c.Request.URL.Path == "/v1/messages/count_tokens" {
+		// Counting does not generate output or consume inference quota. Model
+		// grants, credential limits, body size and channel selection still apply.
+		return 0, 0, nil
+	}
+	if c.Request.URL.Path == "/v1/messages" {
+		var maxTokens int64
+		if value, exists := request["max_tokens"]; !exists || json.Unmarshal(value, &maxTokens) != nil || maxTokens < 0 || string(value) == "null" {
+			return 0, 0, fmt.Errorf("max_tokens 必须为非负整数")
+		}
+		if err := validateAnthropicReservation(request); err != nil {
+			return 0, 0, err
+		}
+		return int64(len(body)) + 1024, maxTokens, nil
 	}
 	mode := relaymode.Name(relaymode.GetByPath(c.Request.URL.Path))
 	output := int64(0)

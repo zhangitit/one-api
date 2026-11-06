@@ -7,6 +7,7 @@ import (
 	"github.com/songquanpeng/one-api/common/blacklist"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
+	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/network"
 	"github.com/songquanpeng/one-api/model"
 	"net/http"
@@ -91,6 +92,14 @@ func RootAuth() func(c *gin.Context) {
 
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
+		// Anthropic SDKs send x-api-key, while Claude Code can send Bearer.
+		// Normalize only at the Messages endpoints; channel selection later
+		// replaces this credential with the selected upstream credential.
+		if helper.IsAnthropicMessagesPath(c.Request.URL.Path) && c.GetHeader("Authorization") == "" {
+			if key := strings.TrimSpace(c.GetHeader("x-api-key")); key != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+key)
+			}
+		}
 		if config.ZeoNexusEnabled {
 			zeoNexusTokenAuth(c)
 			return
@@ -156,6 +165,9 @@ func TokenAuth() func(c *gin.Context) {
 }
 
 func shouldCheckModel(c *gin.Context) bool {
+	if helper.IsAnthropicMessagesPath(c.Request.URL.Path) {
+		return true
+	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/completions") {
 		return true
 	}

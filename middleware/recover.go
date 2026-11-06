@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"net/http"
 	"runtime/debug"
@@ -19,6 +20,11 @@ func RelayPanicRecover() gin.HandlerFunc {
 				logger.Errorf(ctx, fmt.Sprintf("request: %s %s", c.Request.Method, c.Request.URL.Path))
 				body, _ := common.GetRequestBody(c)
 				logger.Errorf(ctx, fmt.Sprintf("request body: %s", string(body)))
+				if helper.IsAnthropicMessagesPath(c.Request.URL.Path) {
+					helper.WriteAnthropicError(c, http.StatusInternalServerError, "网关处理请求时发生内部错误")
+					c.Abort()
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": gin.H{
 						"message": fmt.Sprintf("Panic detected, error: %v. Please submit an issue with the related log here: https://github.com/songquanpeng/one-api", err),

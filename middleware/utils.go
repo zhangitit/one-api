@@ -10,6 +10,11 @@ import (
 )
 
 func abortWithMessage(c *gin.Context, statusCode int, message string) {
+	if helper.IsAnthropicMessagesPath(c.Request.URL.Path) {
+		helper.WriteAnthropicError(c, statusCode, message)
+		c.Abort()
+		return
+	}
 	c.JSON(statusCode, gin.H{
 		"error": gin.H{
 			"message": helper.MessageWithRequestId(message, c.GetString(helper.RequestIdKey)),
@@ -25,6 +30,9 @@ func getRequestModel(c *gin.Context) (string, error) {
 	err := common.UnmarshalBodyReusable(c, &modelRequest)
 	if err != nil {
 		return "", fmt.Errorf("common.UnmarshalBodyReusable failed: %w", err)
+	}
+	if helper.IsAnthropicMessagesPath(c.Request.URL.Path) && strings.TrimSpace(modelRequest.Model) == "" {
+		return "", fmt.Errorf("model is required")
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
 		if modelRequest.Model == "" {

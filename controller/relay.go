@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -24,6 +25,12 @@ import (
 // https://platform.openai.com/docs/api-reference/chat
 
 func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
+	if c.Request.URL.Path == "/v1/messages/count_tokens" {
+		return controller.RelayMessagesCountTokensHelper(c)
+	}
+	if c.Request.URL.Path == "/v1/messages" {
+		return controller.RelayMessagesHelper(c)
+	}
 	var err *model.ErrorWithStatusCode
 	switch relayMode {
 	case relaymode.ImagesGenerations:
@@ -100,6 +107,9 @@ func Relay(c *gin.Context) {
 		lastFailedChannelId = channelId
 		channelName := c.GetString(ctxkey.ChannelName)
 		go processChannelRelayError(ctx, userId, channelId, channelName, *bizErr)
+		if !shouldRetry(c, bizErr.StatusCode) {
+			break
+		}
 	}
 	if bizErr != nil {
 		if bizErr.StatusCode == http.StatusTooManyRequests {
@@ -108,6 +118,16 @@ func Relay(c *gin.Context) {
 
 		// BUG: bizErr is in race condition
 		bizErr.Error.Message = helper.MessageWithRequestId(bizErr.Error.Message, requestId)
+		if helper.IsAnthropicMessagesPath(c.Request.URL.Path) {
+			if raw, ok := c.Get("anthropic_upstream_error_body"); ok && !c.Writer.Written() && c.GetInt("anthropic_upstream_error_status") == bizErr.StatusCode {
+				if body, ok := raw.([]byte); ok {
+					c.Data(bizErr.StatusCode, "application/json", body)
+					return
+				}
+			}
+			helper.WriteAnthropicError(c, bizErr.StatusCode, bizErr.Error.Message)
+			return
+		}
 		c.JSON(bizErr.StatusCode, gin.H{
 			"error": bizErr.Error,
 		})
@@ -115,6 +135,9 @@ func Relay(c *gin.Context) {
 }
 
 func shouldRetry(c *gin.Context, statusCode int) bool {
+	if c.Writer.Written() || strings.EqualFold(c.Writer.Header().Get("x-should-retry"), "false") {
+		return false
+	}
 	if _, ok := c.Get(ctxkey.SpecificChannelId); ok {
 		return false
 	}

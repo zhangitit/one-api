@@ -2,9 +2,9 @@ package anthropic
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -21,25 +21,37 @@ func (a *Adaptor) Init(meta *meta.Meta) {
 }
 
 func (a *Adaptor) GetRequestURL(meta *meta.Meta) (string, error) {
-	return fmt.Sprintf("%s/v1/messages", meta.BaseURL), nil
+	baseURL := strings.TrimRight(meta.BaseURL, "/")
+	endpoint := "/messages"
+	requestPath, err := url.Parse(meta.RequestURLPath)
+	if err != nil {
+		return "", err
+	}
+	if requestPath.Path == "/v1/messages/count_tokens" {
+		endpoint += "/count_tokens"
+	}
+	if requestPath.RawQuery != "" {
+		endpoint += "?" + requestPath.RawQuery
+	}
+	if strings.HasSuffix(baseURL, "/v1") {
+		return baseURL + endpoint, nil
+	}
+	return baseURL + "/v1" + endpoint, nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *meta.Meta) error {
 	adaptor.SetupCommonRequestHeader(c, req, meta)
+	for key, values := range c.Request.Header {
+		if strings.HasPrefix(strings.ToLower(key), "anthropic-") {
+			req.Header[key] = append([]string(nil), values...)
+		}
+	}
 	req.Header.Set("x-api-key", meta.APIKey)
 	anthropicVersion := c.Request.Header.Get("anthropic-version")
 	if anthropicVersion == "" {
 		anthropicVersion = "2023-06-01"
 	}
 	req.Header.Set("anthropic-version", anthropicVersion)
-	req.Header.Set("anthropic-beta", "messages-2023-12-15")
-
-	// https://x.com/alexalbert__/status/1812921642143900036
-	// claude-3-5-sonnet can support 8k context
-	if strings.HasPrefix(meta.ActualModelName, "claude-3-5-sonnet") {
-		req.Header.Set("anthropic-beta", "max-tokens-3-5-sonnet-2024-07-15")
-	}
-
 	return nil
 }
 

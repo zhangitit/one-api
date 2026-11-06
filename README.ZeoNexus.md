@@ -39,9 +39,41 @@ GET  /readyz
 GET  /v1/models
 GET  /v1/models/:model
 POST /v1/chat/completions
+POST /v1/messages
+POST /v1/messages/count_tokens
 ```
 
-Model endpoints require the matching ZeoNexus Bearer key. Chat completions support non-streaming JSON and SSE. Unsupported One API routes are not registered in ZeoNexus mode.
+Model endpoints require the matching ZeoNexus Bearer key. Messages endpoints also accept that same gateway key in `x-api-key`, as sent by Anthropic SDKs. Chat completions and Messages support non-streaming JSON and SSE. Unsupported One API routes are not registered in ZeoNexus mode.
+
+### Anthropic Messages and Claude Code
+
+Both gateway profiles expose the Anthropic Messages API. Publish the model's existing route with `mode: chat`; the gateway applies the same tenant grants, model mapping, concurrency limits and usage settlement to either client protocol.
+
+- An **Anthropic channel (type 14)** forwards native JSON fields, system content blocks, cache controls, thinking/signatures, tool schemas and SSE events without converting them through OpenAI structures. The channel's base URL may end at the host or `/v1`. Query parameters and `anthropic-*` headers are forwarded, and the gateway replaces the client credential with the channel credential. Native provider errors, retry hints and rate-limit headers are preserved.
+- An **OpenAI-compatible channel** translates system/text messages, tool definitions, tool choices, assistant tool calls and user tool results. JSON responses and streamed text/tool argument deltas are returned in Anthropic format. Features with no portable OpenAI equivalent, including signed thinking, enabled/adaptive thinking configuration, server tools and `output_config`, return an explicit error. Use a native Anthropic channel for those features. Prompt-cache hints do not provide Anthropic caching guarantees on an OpenAI upstream.
+- `/v1/messages/count_tokens` forwards exact counts on native Anthropic channels and performs no generation quota or cash reservation. Other upstreams return an explicit unsupported-operation error rather than an estimated Anthropic count.
+
+ZeoNexus retains its conservative text/tool-input reservation policy. Image/document blocks, hosted tools and external execution contexts are rejected for generation because their token budget cannot be bounded by serialized text size. This restriction also applies to nested tool results. Native `max_tokens` is required and may be zero for cache prewarming. Requests without authoritative final usage, including interrupted streams, remain pending reconciliation; the gateway never retries a stream after sending its first event.
+
+For example, use a gateway model alias that has a published chat route:
+
+```bash
+curl https://oneapi.zeotrue.com/v1/messages \
+  -H "x-api-key: $ZEO_NEXUS_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"your-model-alias","max_tokens":256,"messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+For Claude Code, set its gateway base URL to the host **without `/v1`** and select the published model alias:
+
+```bash
+export ANTHROPIC_BASE_URL=https://oneapi.zeotrue.com
+export ANTHROPIC_AUTH_TOKEN="$ZEO_NEXUS_API_KEY"
+export ANTHROPIC_MODEL=your-model-alias
+```
+
+Use `https://stack.zeotrue.com` and the corresponding `sk-nx-cmp-*` key for the inference profile. Native thinking and provider-specific capabilities require a compatible native channel and model.
 
 ## Control API
 
@@ -78,6 +110,8 @@ Use HTTPS upstreams. A GPUStack endpoint on a trusted management network may use
 
 ```bash
 go test ./router -run TestZeoNexusGatewayControlAndRelay -v
+go test ./router -run Anthropic -v
+go test ./relay/anthropic ./relay/controller ./relay/adaptor/anthropic ./middleware ./common/helper
 go test . ./model ./middleware ./controller ./relay/controller
 go build .
 docker compose --env-file deploy/.env -f deploy/docker-compose.1.1.yml config -q
