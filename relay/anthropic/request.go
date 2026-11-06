@@ -124,7 +124,7 @@ func (r *Request) ToOpenAI() (*model.GeneralOpenAIRequest, error) {
 	}
 	// These fields alter model behavior and have no portable chat-completions
 	// equivalent. A clear error is safer than silently losing those semantics.
-	for _, key := range []string{"thinking", "context_management", "container", "mcp_servers", "output_config", "output_format", "top_k"} {
+	for _, key := range []string{"thinking", "compaction", "container", "mcp_servers", "output_config", "output_format", "top_k"} {
 		if value, ok := r.raw[key]; ok && string(value) != "null" {
 			if key == "thinking" {
 				var mode struct {
@@ -186,8 +186,10 @@ func (r *Request) ToOpenAI() (*model.GeneralOpenAIRequest, error) {
 		}
 		o.Messages = append(o.Messages, model.Message{Role: "system", Content: strings.Join(texts, "\n")})
 	}
-	var messages []message
-	_ = json.Unmarshal(r.raw["messages"], &messages)
+	messages, err := r.contextMessages()
+	if err != nil {
+		return nil, err
+	}
 	for i, m := range messages {
 		blocks, err := parseBlocks(m.Content)
 		if err != nil {

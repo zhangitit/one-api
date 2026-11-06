@@ -95,6 +95,7 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
 		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	contextManagement := map[string]any{"edits": []any{map[string]any{"type": "clear_thinking_20251015", "keep": "all"}}}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -110,6 +111,9 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 			}
 			if r.Header.Get("X-Api-Key") != "provider-secret" {
 				t.Error("count_tokens did not use provider credential")
+			}
+			if !reflect.DeepEqual(body["context_management"], contextManagement) {
+				t.Errorf("count_tokens lost native context management: %+v", body["context_management"])
 			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"input_tokens":37}`)
@@ -137,6 +141,9 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 			}
 			if body["model"] != "native-upstream" || body["thinking"] == nil || body["metadata"] == nil || body["future_request_field"] == nil {
 				t.Errorf("native fields or model mapping lost: %+v", body)
+			}
+			if !reflect.DeepEqual(body["context_management"], contextManagement) {
+				t.Errorf("native context management changed: %+v", body["context_management"])
 			}
 			system, ok := body["system"].([]any)
 			if !ok || len(system) != 2 || system[0].(map[string]any)["text"] != "first system block" || system[1].(map[string]any)["cache_control"] == nil {
@@ -171,6 +178,9 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 		}
 		if r.Header.Get("Authorization") != "Bearer provider-secret" {
 			t.Error("bridge did not use provider credential")
+		}
+		if _, exists := body["context_management"]; exists {
+			t.Error("Anthropic context_management leaked into the OpenAI request")
 		}
 		messages, ok := body["messages"].([]any)
 		if !ok {
@@ -250,6 +260,7 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 		"tools":    []map[string]any{{"name": "inspect", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "additionalProperties": false}}},
 		"thinking": map[string]any{"type": "adaptive"}, "metadata": map[string]any{"user_id": "opaque-test-user"},
 		"future_request_field": map[string]any{"preserved": true},
+		"context_management":   contextManagement,
 	}
 	t.Run("native JSON and cache settlement", func(t *testing.T) {
 		response := anthropicIntegrationRequest(t, engine, "/v1/messages?beta=true", anthropicIntegrationKey, false, nativePayload)
@@ -279,6 +290,7 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 		db.Model(&model.ZeoUsage{}).Count(&beforeRows)
 		response := anthropicIntegrationRequest(t, engine, "/v1/messages/count_tokens?beta=true", anthropicIntegrationKey, false, map[string]any{
 			"model": "native-model", "system": nativePayload["system"], "messages": nativePayload["messages"], "tools": nativePayload["tools"],
+			"context_management": contextManagement,
 		})
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"input_tokens":37`) {
 			t.Fatalf("native count_tokens failed: %d %s", response.Code, response.Body.String())
@@ -292,7 +304,8 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 
 	bridgePayload := map[string]any{
 		"model": "bridge-model", "max_tokens": 32, "system": "Inspect source code.",
-		"tools": []map[string]any{{"name": "inspect", "description": "Inspect a file", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}}}},
+		"context_management": contextManagement,
+		"tools":              []map[string]any{{"name": "inspect", "description": "Inspect a file", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}}}},
 		"messages": []map[string]any{
 			{"role": "user", "content": "Inspect this file."},
 			{"role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "tool_prior", "name": "inspect", "input": map[string]any{"path": "prior.go"}}}},
@@ -346,6 +359,45 @@ func TestAnthropicMessagesGateway(t *testing.T) {
 		}
 		if calls.Load()+countCalls.Load() != beforeCalls || reserves.Load() != beforeReserves {
 			t.Fatal("invalid budget caused provider access or a cash reservation")
+		}
+	})
+	t.Run("empty context configuration is compatible with OpenAI", func(t *testing.T) {
+		defer func() { bridgePayload["context_management"] = contextManagement }()
+		for _, empty := range []any{map[string]any{}, map[string]any{"edits": []any{}}} {
+			bridgePayload["context_management"] = empty
+			response := anthropicIntegrationRequest(t, engine, "/v1/messages", anthropicIntegrationKey, false, bridgePayload)
+			if response.Code != http.StatusOK {
+				t.Fatalf("empty context management was rejected: %d %s", response.Code, response.Body.String())
+			}
+			assertAnthropicSettledUsage(t, db, response, false)
+		}
+	})
+	t.Run("invalid or unbounded context edits fail before cash or provider access", func(t *testing.T) {
+		beforeCalls, beforeReserves := calls.Load()+countCalls.Load(), reserves.Load()
+		var beforeRows int64
+		db.Model(&model.ZeoUsage{}).Count(&beforeRows)
+		for _, alias := range []string{"native-model", "bridge-model"} {
+			for _, context := range []any{
+				[]any{},
+				map[string]any{"edits": "invalid"},
+				map[string]any{"edits": []any{map[string]any{"type": "future_context_edit"}}},
+				map[string]any{"edits": []any{map[string]any{"type": "compact_20260112"}}},
+			} {
+				payload := map[string]any{
+					"model": alias, "max_tokens": 32, "context_management": context,
+					"messages": []map[string]string{{"role": "user", "content": "hello"}},
+				}
+				response := anthropicIntegrationRequest(t, engine, "/v1/messages", anthropicIntegrationKey, false, payload)
+				assertAnthropicError(t, response, http.StatusBadRequest)
+				if !strings.Contains(response.Body.String(), "context_management") {
+					t.Fatalf("context error did not identify the unsupported field: %s", response.Body.String())
+				}
+			}
+		}
+		var afterRows int64
+		db.Model(&model.ZeoUsage{}).Count(&afterRows)
+		if calls.Load()+countCalls.Load() != beforeCalls || reserves.Load() != beforeReserves || afterRows != beforeRows {
+			t.Fatal("invalid context management caused provider access or a quota/cash reservation")
 		}
 	})
 	t.Run("authorization prevents all provider calls", func(t *testing.T) {

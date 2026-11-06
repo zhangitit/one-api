@@ -3,15 +3,25 @@ package middleware
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/songquanpeng/one-api/relay/anthropic"
 )
 
 // The existing ZeoNexus reservation uses serialized bytes as a conservative
 // text-token bound. Remote/binary content and server-executed tools cannot use
 // that bound: a short URL may expand into an arbitrarily large document.
 func validateAnthropicReservation(request map[string]json.RawMessage) error {
-	for _, key := range []string{"mcp_servers", "container", "context_management"} {
+	for _, key := range []string{"mcp_servers", "container", "compaction"} {
 		if value, exists := request[key]; exists && string(value) != "null" {
 			return fmt.Errorf("此网关暂不支持无法预估预算的 Anthropic %s", key)
+		}
+	}
+	// Context clearing only removes supplied text and does not require another
+	// generation. Reserve against the original full body, then let native
+	// Anthropic apply the edit or the OpenAI bridge handle a supported edit.
+	if context, exists := request["context_management"]; exists {
+		if err := anthropic.ValidateContextManagement(context); err != nil {
+			return err
 		}
 	}
 	var tools []struct {
